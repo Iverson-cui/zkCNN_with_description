@@ -9,16 +9,19 @@
 #include "global_var.hpp"
 
 // the arguments' format
-#define INPUT_FILE_ID 1     // the input filename
-#define CONFIG_FILE_ID 2    // the config filename
-#define OUTPUT_FILE_ID 3    // the input filename
-#define PIC_CNT 4           // the number of picture paralleled
+#define INPUT_FILE_ID 1  // the input filename
+#define CONFIG_FILE_ID 2 // the config filename
+#define OUTPUT_FILE_ID 3 // the input filename
+#define PIC_CNT 4        // the number of picture paralleled
 
 vector<std::string> output_tb(16, "");
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
+    // Sets up the elliptic curve pairing needed for zero-knowledge proofs
     initPairing(mcl::BLS12_381);
 
+    // extract filenames and parameters from command line arguments
     char i_filename[500], c_filename[500], o_filename[500];
 
     strcpy(i_filename, argv[INPUT_FILE_ID]);
@@ -27,15 +30,21 @@ int main(int argc, char **argv) {
 
     int pic_cnt = atoi(argv[PIC_CNT]);
 
-    output_tb[MO_INFO_OUT_ID] ="lenet (relu)";
+    output_tb[MO_INFO_OUT_ID] = "lenet (relu)";
     output_tb[PCNT_OUT_ID] = std::to_string(pic_cnt);
 
+    // initialize the prover
     prover p;
+    // network creation
     lenet nn(32, 32, 1, pic_cnt, MAX, i_filename, c_filename, o_filename);
+    // arithmetic circuit generation and proof creation
     nn.create(p, false);
+    // initialize the verifier
     verifier v(&p, p.C);
+    // proof verification
     v.verify();
 
-    for (auto &s: output_tb) printf("%s, ", s.c_str());
+    for (auto &s : output_tb)
+        printf("%s, ", s.c_str());
     puts("");
 }
