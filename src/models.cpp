@@ -19,6 +19,9 @@ vgg::vgg(i64 psize_x, i64 psize_y, i64 pchannel, i64 pparallel, const string &i_
 {
     assert(psize_x == psize_y);
     // conv_section is a vectors of vectors keeping conv layers
+    /*
+    conv_section, pool, full_conn are all defined in neuralNetwork.hpp
+    */
     conv_section.resize(5);
 
     // opens n_filename for reading
@@ -205,18 +208,25 @@ ccnn::ccnn(i64 psize_x, i64 psize_y, i64 pparallel, i64 pchannel, poolType pool_
     //    pool.emplace_back(pool_ty, 2, 1);
 }
 
+/**
+ * Lenet class constructor, executed when initialized
+ * Declaration is somewhere else(in the models.hpp file)
+ */
 lenet::lenet(i64 psize_x, i64 psize_y, i64 pchannel, i64 pparallel, poolType pool_ty, const std::string &i_filename,
              const string &c_filename, const std::string &o_filename)
     : neuralNetwork(psize_x, psize_y, pchannel, pparallel, i_filename, c_filename, o_filename)
 {
+
     conv_section.emplace_back();
 
     i64 kernel_size = 5;
     convType conv_ty = kernel_size > 3 || pparallel > 1 ? FFT : NAIVE_FAST;
 
     if (psize_x == 28 && psize_y == 28)
+        // conv type is conv_ty, output channels=6, input channels= pchannel, kernel size=5, padding=0, stride=2
         conv_section[0].emplace_back(conv_ty, 6, pchannel, kernel_size, 0, 2);
     else
+        // only difference is no stride
         conv_section[0].emplace_back(conv_ty, 6, pchannel, kernel_size, 0, 0);
     pool.emplace_back(pool_ty, 2, 1);
 
