@@ -23,6 +23,8 @@ ofstream out;
 /**
  * This is neuralnetwork class constructor
  * In this constructor, only files are opened, no layers and weights are created
+ * in->i_filename, conf->c_filename, out->o_filename
+ * in, conf and out can be directly used and accessed in other member functions
  * weights loading is handed off to derived class constructors
  */
 neuralNetwork::neuralNetwork(i64 psize_x, i64 psize_y, i64 pchannel, i64 pparallel, const string &i_filename,
@@ -75,26 +77,40 @@ void neuralNetwork::create(prover &pr, bool only_compute)
 
     // set memory layout for network
     initParam();
+    // circuit initialization
     pr.C.init(Q_BIT_SIZE, SIZE);
 
+    // val is vector<vector<F>>
+    // first resize it based on number of layers
     pr.val.resize(SIZE);
+    // turn these two vectors into iterators for easy access
     val = pr.val.begin();
     two_mul = pr.C.two_mul.begin();
 
     i64 layer_id = 0;
+    // intialize input layer, create gates, calculate layer values
     inputLayer(pr.C.circuit[layer_id++]);
 
+    // pic_size_x and y is the initial conv size
     new_nx_in = pic_size_x;
     new_ny_in = pic_size_y;
+    // conv processing iteration
     for (i64 i = 0; i < conv_section.size(); ++i)
     {
         auto &sec = conv_section[i];
         for (i64 j = 0; j < sec.size(); ++j)
         {
+            // conv is the atom conv kernel
             auto &conv = sec[j];
+            // refresh conv parameters based on current conv kernel
+            // because each time we are having different conv kernel
             refreshConvParam(new_nx_in, new_ny_in, conv);
+            // pooling only appears after many conv layers
             pool_ty = i < pool.size() && j == sec.size() - 1 ? pool[i].ty : NONE;
+            // quantization bit preservation
             x_bit = x_next_bit;
+            // conv has different implementations
+            // based on the conv type, different layers are created
             switch (conv.ty)
             {
             case FFT:
@@ -107,22 +123,34 @@ void neuralNetwork::create(prover &pr, bool only_compute)
             case NAIVE_FAST:
                 naiveConvLayerFast(pr.C.circuit[layer_id], layer_id, conv.weight_start_id, conv.bias_start_id);
                 break;
+            // default: mult layer+add layer
             default:
+                // initialize, create gates and calculate values for conv mult layer
                 naiveConvLayerMul(pr.C.circuit[layer_id], layer_id, conv.weight_start_id);
+                // initialize, create gates and calculate values for conv add layer
                 naiveConvLayerAdd(pr.C.circuit[layer_id], layer_id, conv.bias_start_id);
             }
 
-            // update the scale bit
+            // analyzes the value distribution from the previous layer to determine the optimal quantization bit-width for the current layer
             x_next_bit = getNextBit(layer_id - 1);
+            // bit width adjustment between layers
             T = x_bit + w_bit - x_next_bit;
             Q_MAX = Q + T;
+            // when max pooling is not used, relu is called
             if (pool_ty != MAX)
                 reluActConvLayer(pr.C.circuit[layer_id], layer_id);
         }
 
+        /**
+         * There are two stages of conv.
+         * For example, 20 conv operations can be divided into 4 stages, each stage contains 5 conv operations.
+         * do the pooling after each 5 conv
+         */
         if (i >= pool.size())
             continue;
+        // calculate pooling parameters
         calcSizeAfterPool(pool[i]);
+        // based on different pool type, do the pooling
         switch (pool[i].ty)
         {
         case AVG:
@@ -167,13 +195,24 @@ void neuralNetwork::create(prover &pr, bool only_compute)
     cerr << "finish creating circuit." << endl;
 }
 
+/**
+ * initialized input layers
+ * @param: circuit is the corresponding input layer
+ */
 void neuralNetwork::inputLayer(layer &circuit)
 {
+    // total_in_size is the input size, also the size of input layer
     initLayer(circuit, total_in_size, layerType::INPUT);
 
+    // input layer only contains identity gates
+    // create these gates
     for (i64 i = 0; i < total_in_size; ++i)
+        // update uni_gates vector to contain these gates
+        // (i,0,0,0) is passed to constructor of Unigate class
+        // output pos=i, input pos=0, scaling factor=0, layer_id=0
         circuit.uni_gates.emplace_back(i, 0, 0, 0);
 
+    // calculate output values of input layer
     calcInputLayer(circuit);
     printLayerInfo(circuit, 0);
 }
@@ -321,58 +360,98 @@ void neuralNetwork::naiveConvLayerFast(layer &circuit, i64 &layer_id, i64 first_
     printLayerInfo(circuit, layer_id++);
 }
 
+/**
+ * processes mult layer in naive conv layer
+ * @param circuit: the layer to be processed
+ * @param layer_id: the index of the layer in the whole circuit
+ * create mult gates, read weights, do forward computation
+ * forward results are stored in val[layer_id]
+ */
 void neuralNetwork::naiveConvLayerMul(layer &circuit, i64 &layer_id, i64 first_conv_id)
 {
+    // size of output matrix
     i64 mat_out_size = nx_out * ny_out;
+    // size of input matrix
     i64 mat_in_size = nx_in * ny_in;
+    // m=conv.size, kernel size
     i64 m_sqr = sqr(m);
+    // L is left/top boundary with padding
+    // Rx, Ry is right/bottom boundaries with padding
     i64 L = -padding, Rx = nx_in + padding, Ry = ny_in + padding;
 
+    // g is the output size
     i64 g = 0;
+    // this nested loop creates all multiplication gates, each for a weight and input multiplication
+    // parallel processing units
     for (i64 p = 0; p < pic_parallel; ++p)
+        // output channels
         for (i64 co = 0; co < channel_out; ++co)
+            // input channels
             for (i64 ci = 0; ci < channel_in; ++ci)
+                // x stride aware stepping
                 for (i64 x = L; x + m <= Rx; x += (1 << log_stride))
+                    // y stride aware stepping
                     for (i64 y = L; y + m <= Ry; y += (1 << log_stride))
+                        // each conv window
                         for (i64 tx = x; tx < x + m; ++tx)
                             for (i64 ty = y; ty < y + m; ++ty)
+                                // check if (tx,ty) is within input matrix boundary
                                 if (check(tx, ty, nx_in, ny_in))
                                 {
+                                    // calculate linear index for input u
                                     i64 u = tesIdx(p, ci, tx, ty, channel_in, nx_in, ny_in);
+                                    // calculate linear index for weight v
                                     i64 v = first_conv_id + tesIdx(co, ci, tx - x, ty - y, channel_in, m, m);
+                                    // creates the multiplication gates with input u and v, output g, scaling 0
+                                    // last argument is layer reference
                                     circuit.bin_gates.emplace_back(g++, u, v, 0, 2 * (u8)(layer_id > 1));
                                 }
 
+    // initialize this layer
+    // for mult layer, this layer output size = number of multiplication gates
     initLayer(circuit, g, layerType::NCONV_MUL);
     circuit.need_phase2 = true;
+    // read the conv weights from file and update val[0]
     readConvWeight(first_conv_id);
+    // after loading the weights and creating all gates, we can do the forward computation
     calcNormalLayer(circuit, layer_id);
+    // print layer info, currently does nothing
     printLayerInfo(circuit, layer_id++);
 }
 
+/**
+ * processes add layer for naive conv layer
+ */
 void neuralNetwork::naiveConvLayerAdd(layer &circuit, i64 &layer_id, i64 first_bias_id)
 {
+    // size of output matrix
     i64 size = nx_out * ny_out * channel_out * pic_parallel;
+    // initialize this layer
+    // this layer output size is calculated based on output channels and dims etc
     initLayer(circuit, size, layerType::NCONV_ADD);
-
     i64 mat_in_size = nx_in * ny_in;
     i64 m_sqr = sqr(m);
     i64 L = -padding, Rx = nx_in + padding, Ry = ny_in + padding;
 
     i64 u = 0;
+    // gate creation nested loop
     for (i64 p = 0; p < pic_parallel; ++p)
         for (i64 co = 0; co < channel_out; ++co)
             for (i64 ci = 0; ci < channel_in; ++ci)
                 for (i64 x = L; x + m <= Rx; x += (1 << log_stride))
                     for (i64 y = L; y + m <= Ry; y += (1 << log_stride))
                     {
+                        // each output position g, result is calculated by sum(input*weight)+bias
                         i64 g = tesIdx(p, co, ((x - L) >> log_stride), ((y - L) >> log_stride), channel_out, nx_out, ny_out);
                         i64 cnt = 0;
+                        // bias addition, only once for each output position
                         if (ci == 0 && ~first_bias_id)
                         {
                             circuit.uni_gates.emplace_back(g, first_bias_id + co, 0, 0);
                             ++cnt;
                         }
+                        // accumulate all input*weight products
+                        // each iteration round of the following two loops produces one input*weight product
                         for (i64 tx = x; tx < x + m; ++tx)
                             for (i64 ty = y; ty < y + m; ++ty)
                                 if (check(tx, ty, nx_in, ny_in))
@@ -382,20 +461,30 @@ void neuralNetwork::naiveConvLayerAdd(layer &circuit, i64 &layer_id, i64 first_b
                                 }
                     }
 
+    // load bias into val[0]
     if (~first_bias_id)
         readBias(first_bias_id);
+    // calculate gate output values
     calcNormalLayer(circuit, layer_id);
+    // print info
     printLayerInfo(circuit, layer_id++);
 }
 
+/**
+ * Function for ReLU layers after convolutional layers
+ * using bit decomposition to convert ReLU operation into a series of gates
+ */
 void neuralNetwork::reluActConvLayer(layer &circuit, i64 &layer_id)
 {
     i64 mat_out_size = nx_out * ny_out;
     i64 size = 1L * mat_out_size * channel_out * (2 + Q_MAX) * pic_parallel;
+    // number of output elements being processed by ReLU
     i64 block_len = mat_out_size * channel_out * pic_parallel;
 
+    // size of all bit decomposition values
     i64 dcmp_cnt = block_len * Q_MAX;
     i64 first_dcmp_id = val[0].size();
+    // extends val[0] to accommodate these new values
     val[0].resize(val[0].size() + dcmp_cnt);
     total_relu_in_size += dcmp_cnt;
 
@@ -404,26 +493,63 @@ void neuralNetwork::reluActConvLayer(layer &circuit, i64 &layer_id)
 
     circuit.zero_start_id = block_len;
 
+    /**
+     * first gate creation loop
+     * this loop takes input from layer 0
+     * the prover provide auxiliary bit decomposition for all of the conv result elements
+     * gates in this loop do the ReLU job, it outputs the ReLU(x) based on prover's aux input.
+     * but whether aux input is correct is yet to be tested
+     */
     for (i64 g = 0; g < block_len; ++g)
     {
+        // bit representations of each element g are provided by prover as auxiliary inputs
+        // each element's bit representation takes up Q_MAX positions, there are in total block_len*Q_MAX bits
+        // sign_u is the starting position of the bit decomposition values for element g
+        // think of first_dcmp_id as the starting position of all bit decomposition values, an offset
         i64 sign_u = first_dcmp_id + g * Q_MAX;
+        // iterate through every bit position for this element
         for (i64 s = 1; s < Q; ++s)
         {
+            // v is the corresponding position
             i64 v = sign_u + s;
+            // uniGates with scaling Q-1-s and lu 0
+            // assign different weights to different bit positions, notice that bit positions are at input layer, they are provided by the prover as inputs
+            // for a given g, accumulate all v bits and assign sum to g
+            // this is the magnitude version of original number
             circuit.uni_gates.emplace_back(g, v, 0, Q - 1 - s);
+
+            /**
+             * This binary gates has the following effects:
+             * 1. If sign bit is 1, this number is negative, so output 0
+             * 2. If sign bit is 0, this number is positive, so reconstructs positive magnitude for pos g
+             */
+            // scaling factor Q - s + Q_BIT_SIZE
+            // lu 0
             circuit.bin_gates.emplace_back(g, sign_u, v, Q - s + Q_BIT_SIZE, 0);
         }
     }
 
+    // calculating FFT parameters
     i64 len = getFFTLen();
     i64 lenh = len >> 1;
+    // defining padding boundaries
     i64 L = -padding, Rx = nx_in + padding, Ry = ny_in + padding;
+
+    /**
+     * second gate creation loop
+     * this loop iterates through every conv result in layer_id - 1
+     * these gates are used to make sure the bit decomposition corresponds to the result numbers
+     */
+
     for (i64 p = 0; p < pic_parallel; ++p)
         for (i64 co = 0; co < channel_out; ++co)
             for (i64 x = L; x + m <= Rx; x += (1 << log_stride))
                 for (i64 y = L; y + m <= Ry; y += (1 << log_stride))
                 {
+                    // linear index of input
                     i64 u = tesIdx(p, co, (x - L) >> log_stride, (y - L) >> log_stride, channel_out, nx_out, ny_out);
+                    // g is the gate output position in the circuit
+                    // sign_v is the starting position of the bit decomposition values for element u
                     i64 g = block_len + u, sign_v = first_dcmp_id + u * Q_MAX;
                     circuit.uni_gates.emplace_back(g, u, layer_id - 1, Q_BIT_SIZE + 1);
                     circuit.bin_gates.emplace_back(g, u, sign_v, 1, 2 * (u8)(layer_id > 1));
@@ -436,6 +562,11 @@ void neuralNetwork::reluActConvLayer(layer &circuit, i64 &layer_id)
                     }
                 }
 
+    /**
+     * third gate creation loop
+     * this loop are filled with squaring gates
+     * gates in this loop is used to make sure all bit decomposition values are either 0 or 1
+     */
     for (i64 g = block_len << 1; g < (block_len << 1) + block_len * Q_MAX; ++g)
     {
         i64 u = first_dcmp_id + g - (block_len << 1);
@@ -443,7 +574,9 @@ void neuralNetwork::reluActConvLayer(layer &circuit, i64 &layer_id)
         circuit.uni_gates.emplace_back(g, u, 0, Q_BIT_SIZE + 1);
     }
 
+    // calculate output values
     calcNormalLayer(circuit, layer_id);
+    // print info
     printLayerInfo(circuit, layer_id++);
 }
 
@@ -497,6 +630,9 @@ void neuralNetwork::reluActFconLayer(layer &circuit, i64 &layer_id)
     printLayerInfo(circuit, layer_id++);
 }
 
+/**
+ * This is the average pooling layer function
+ */
 void neuralNetwork::avgPoolingLayer(layer &circuit, i64 &layer_id)
 {
     i64 mat_out_size = nx_out * ny_out;
@@ -737,20 +873,26 @@ void neuralNetwork::fullyConnLayer(layer &circuit, i64 &layer_id, i64 first_fc_i
 
 void neuralNetwork::refreshConvParam(i64 new_nx, i64 new_ny, const convKernel &conv)
 {
+    // original input dimensions
     nx_in = new_nx;
     ny_in = new_ny;
+    // padding size
     padding = conv.padding;
+    // calculate padded input dimensions
     nx_padded_in = nx_in + (conv.padding * 2);
     ny_padded_in = ny_in + (conv.padding * 2);
 
+    // extract information from convKernel
     m = conv.size;
     channel_in = conv.channel_in;
     channel_out = conv.channel_out;
     log_stride = conv.stride_bl;
 
+    // output dimension calculation
     nx_out = ((nx_padded_in - m) >> log_stride) + 1;
     ny_out = ((ny_padded_in - m) >> log_stride) + 1;
 
+    // output dimensions become input dimensions for next layer
     new_nx_in = nx_out;
     new_ny_in = ny_out;
     conv_layer_cnt = conv.ty == FFT ? FFT_SIZE : conv.ty == NAIVE ? NCONV_SIZE
@@ -858,6 +1000,10 @@ void neuralNetwork::initParam()
     cerr << "SIZE: " << SIZE << endl;
 }
 
+/**
+ * This function is for printing layer information after forwarding
+ * but now it does nothing, all commented out
+ */
 void neuralNetwork::printLayerInfo(const layer &circuit, i64 layer_id)
 {
     //    fprintf(stderr, "+ %2lld " , layer_id);
@@ -907,58 +1053,93 @@ i64 neuralNetwork::getPoolDecmpSize() const
     }
 }
 
+/**
+ * This function calculates the parameters and output dimensions for pooling layers in a neural network
+ * @param: p is the poolKernel object containing pooling parameters
+ */
 void neuralNetwork::calcSizeAfterPool(const poolKernel &p)
 {
+    // extract information from poolKernel
     pool_sz = p.size;
     pool_bl = ceilPow2BitLength(pool_sz);
     pool_stride_bl = p.stride_bl;
     pool_stride = 1 << p.stride_bl;
+    // based on different pool type, number of pool layers is different
     pool_layer_cnt = p.ty == MAX ? 1 + ceilPow2BitLength(sqr(p.size) + 1) : AVE_POOL_SIZE;
+    // calculate output dimensions, i.e. dims after pooling
     new_nx_in = ((nx_out - pool_sz) >> pool_stride_bl) + 1;
     new_ny_in = ((ny_out - pool_sz) >> pool_stride_bl) + 1;
 }
 
+/**
+ * read input layer data, quantize them and store in val[0]
+ * @param: circuit is the input layer
+ */
 void neuralNetwork::calcInputLayer(layer &circuit)
 {
+    // resizing val[0], input layer gates output, to fit input data
+    // but now val[0] is still all 0
     val[0].resize(circuit.size);
 
     assert(val[0].size() == total_in_size);
+    // sets up an iterator
     auto val_0 = val[0].begin();
 
+    // preset the mx and mn values
+    // num is the temp value of numbers being read now
     double num, mx = -10000, mn = 10000;
+    // input_dat stores all the input data
     vector<double> input_dat;
+    // update input_dat in iterations
     for (i64 ci = 0; ci < pic_channel; ++ci)
         for (i64 x = 0; x < pic_size_x; ++x)
             for (i64 y = 0; y < pic_size_y; ++y)
             {
+                // in has already been set to input file in constructor
+                // assign the now value of in to num
                 in >> num;
+                // update input_dat
                 input_dat.push_back(num);
+                // based on num, update mx and mn
                 mx = max(mx, num);
                 mn = min(mn, num);
             }
 
     // (mx - mn) * 2^i <= 2^Q - 1
     // quant_shr = i
+    // x_next_bit here is the i in the formula above
     x_next_bit = (int)(log(((1 << (Q - 1)) - 1) / (mx - mn)) / log(2));
+    // make sure the formula is satisfied
     if ((int)((mx - mn) * exp2(x_next_bit)) > (1 << (Q - 1)) - 1)
         --x_next_bit;
 
+    // quantization process
     for (i64 p = 0; p < pic_parallel; ++p)
     {
         i64 i = 0;
         for (i64 ci = 0; ci < pic_channel; ++ci)
             for (i64 x = 0; x < pic_size_x; ++x)
                 for (i64 y = 0; y < pic_size_y; ++y)
+                    // quantize each value by multiplying 2^x_next_bit and rounding
+                    // write quantized data to val_0
                     *val_0++ = F((i64)(input_dat[i++] * exp2(x_next_bit)));
     }
+    // clean up operation to avoid garbage values
     for (; val_0 < val[0].begin() + circuit.size; ++val_0)
         val_0->clear();
 }
 
+/**
+ * reads convolutional layer weights, store them in val[0] and quantize them
+ */
 void neuralNetwork::readConvWeight(i64 first_conv_id)
 {
+    // val_0 is an iterator pointing to val[0] container
+    // modifying val_0 means modifying val[0]
+    // later val[0] will be used
     auto val_0 = val[0].begin() + first_conv_id;
 
+    // default max and min values
     double num, mx = -10000, mn = 10000;
     vector<double> input_dat;
     for (i64 co = 0; co < channel_out; ++co)
@@ -974,14 +1155,17 @@ void neuralNetwork::readConvWeight(i64 first_conv_id)
 
     // (mx - mn) * 2^i <= 2^Q - 1
     // quant_shr = i
+    // w_bit is the quantization bit for weights
     w_bit = (int)(log(((1 << (Q - 1)) - 1) / (mx - mn)) / log(2));
     if ((int)((mx - mn) * exp2(w_bit)) > (1 << (Q - 1)) - 1)
         --w_bit;
 
+    // val_0 contains values after quantization
     for (double i : input_dat)
         *val_0++ = F((i64)(i * exp2(w_bit)));
 }
 
+// read bias parameters and load into val[0]
 void neuralNetwork::readBias(i64 first_bias_id)
 {
     auto val_0 = val[0].begin() + first_bias_id;
@@ -1049,24 +1233,40 @@ void neuralNetwork::prepareMax(i64 layer_id, i64 idx, i64 max_id)
         val[0].at(max_id) = data;
 }
 
+/**
+ * forward computation for a NN layer
+ * @param circuit: the layer to be computed
+ * @param layer_id: the index of the layer in the whole circuit
+ * the output of the layer will be stored in val[layer_id]
+ * this function only supports eq gates and mult gates
+ */
 void neuralNetwork::calcNormalLayer(const layer &circuit, i64 layer_id)
 {
+    // allocate memory for output values
     val[layer_id].resize(circuit.size);
+    // initialize all values to 0
     for (auto &x : val[layer_id])
         x.clear();
 
+    // iterate through all unary gates
     for (auto &gate : circuit.uni_gates)
     {
+        // input is val[gate.lu].at(gate.u), meaning gate.u index of gate.lu layer
+        // scaling factor is two_mul[gate.sc]
         val[layer_id].at(gate.g) = val[layer_id].at(gate.g) + val[gate.lu].at(gate.u) * two_mul[gate.sc];
     }
 
+    // iterate through all binary gates
     for (auto &gate : circuit.bin_gates)
     {
+        // get u,v layer reference
         u8 bin_lu = gate.getLayerIdU(layer_id), bin_lv = gate.getLayerIdV(layer_id);
+        // update output value by multiplying two input values and gate scaling factor
         val[layer_id].at(gate.g) = val[layer_id].at(gate.g) + val[bin_lu].at(gate.u) * val[bin_lv][gate.v] * two_mul[gate.sc];
     }
 
     F mx_val = F_ZERO, mn_val = F_ZERO;
+    // final layer scaling for all output values based on circuit.scale
     for (i64 g = 0; g < circuit.size; ++g)
         val[layer_id].at(g) = val[layer_id].at(g) * circuit.scale;
 }

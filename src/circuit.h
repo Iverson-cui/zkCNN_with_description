@@ -37,7 +37,7 @@ struct binGate
     {
         //        cerr << "bin: " << g << ' ' << u << ' ' << lu << ' ' << v << ' ' << lu << ' ' << sc.real << endl;
     }
-    // this time l is combined with u reference and v reference, we manually extract them from l compared to uniGate
+    // for binGate, l is composed of both u reference and v reference, so we manually extract them
     [[nodiscard]] u8 getLayerIdU(u8 layer_id) const { return !l ? 0 : layer_id - 1; }
     [[nodiscard]] u8 getLayerIdV(u8 layer_id) const { return !(l & 1) ? 0 : layer_id - 1; }
 };
