@@ -42,6 +42,8 @@ struct binGate
     [[nodiscard]] u8 getLayerIdV(u8 layer_id) const { return !(l & 1) ? 0 : layer_id - 1; }
 };
 
+// enum class is a better way to define enumerations in C++
+// It provides better type safety and avoids name conflicts
 enum class layerType
 {
     INPUT,
@@ -68,9 +70,17 @@ enum class layerType
 class layer
 {
 public:
+    // layertype of this layer
     layerType ty;
+    // adding {} means brace initialization to 0
+    // size means number of values this layer produces
+    // size_u[0] and size_v[0] means current layer subsets
+    // size_u[1] and size_v[1] means previous layer subsets
     u32 size{}, size_u[2]{}, size_v[2]{};
     // bit precisions for u, v and output
+    // bit_length means bit length of output values
+    // bit_length_u[0] is for current layer subsets u
+    // bit_length_u[1] is for previous layer subsets u
     i8 bit_length_u[2]{}, bit_length_v[2]{}, bit_length{};
     i8 max_bl_u{}, max_bl_v{};
 
@@ -82,6 +92,8 @@ public:
     std::vector<uniGate> uni_gates;
     std::vector<binGate> bin_gates;
 
+    // enable to map compact subset indices to original positions
+    // it stores the position of output
     vector<u32> ori_id_u, ori_id_v;
     i8 fft_bit_length;
 
@@ -100,6 +112,10 @@ public:
         scale = F_ONE;
     }
 
+    /**
+     * max_bl_u and max_bl_v are the max bit lengths of u and v inputs
+     * update them based on subset processing results
+     */
     void updateSize()
     {
         max_bl_u = std::max(bit_length_u[0], bit_length_u[1]);
@@ -115,6 +131,7 @@ class layeredCircuit
 {
 public:
     vector<layer> circuit;
+    // how many layers does this circuit have
     u8 size;
     vector<F> two_mul;
 
