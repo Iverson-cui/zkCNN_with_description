@@ -89,15 +89,25 @@ void neuralNetwork::create(prover &pr, bool only_compute)
 
     i64 layer_id = 0;
     // intialize input layer, create gates, calculate layer values
+    // but this initialization of input layers only contain network weights and input image, no auxiliary input is considered
+    // because we only know how many aux exists in the input layer after all layers are processed
     inputLayer(pr.C.circuit[layer_id++]);
 
     // pic_size_x and y is the initial conv size
     new_nx_in = pic_size_x;
     new_ny_in = pic_size_y;
     // conv processing iteration
+    /**
+     * There are two stages of conv.
+     * For example, 20 conv operations can be divided into 4 stages, each
+     * stage contains 5 conv operations.
+     * do the pooling after each 5 conv
+     */
+    // stage 1 iteration
     for (i64 i = 0; i < conv_section.size(); ++i)
     {
         auto &sec = conv_section[i];
+        // stage 2 iteration
         for (i64 j = 0; j < sec.size(); ++j)
         {
             // conv is the atom conv kernel
@@ -141,11 +151,7 @@ void neuralNetwork::create(prover &pr, bool only_compute)
                 reluActConvLayer(pr.C.circuit[layer_id], layer_id);
         }
 
-        /**
-         * There are two stages of conv.
-         * For example, 20 conv operations can be divided into 4 stages, each stage contains 5 conv operations.
-         * do the pooling after each 5 conv
-         */
+        // pooling is done after each stage 2 conv
         if (i >= pool.size())
             continue;
         // calculate pooling parameters
@@ -163,10 +169,14 @@ void neuralNetwork::create(prover &pr, bool only_compute)
         }
     }
 
+    // after all convs, here comes FC layers
     pool_ty = NONE;
+    // iterate through all full_conn layer
     for (int i = 0; i < full_conn.size(); ++i)
     {
+
         auto &fc = full_conn[i];
+        // refresh parameters
         refreshFCParam(fc);
         x_bit = x_next_bit;
         fullyConnLayer(pr.C.circuit[layer_id], layer_id, fc.weight_start_id, fc.bias_start_id);
@@ -183,14 +193,18 @@ void neuralNetwork::create(prover &pr, bool only_compute)
     assert(SIZE == layer_id);
 
     total_in_size += total_max_in_size + total_ave_in_size + total_relu_in_size;
+    // re-Initialize input layer with complete size
+    // this time aux input are considered
     initLayer(pr.C.circuit[0], total_in_size, layerType::INPUT);
     assert(total_in_size == pr.val[0].size());
 
     printInfer(pr);
     //    printLayerValues(pr);
 
+    // if only forward is wanted, return from this functions
     if (only_compute)
         return;
+    // else, generate the subset for efficient proof later
     pr.C.initSubset();
     cerr << "finish creating circuit." << endl;
 }
@@ -580,6 +594,10 @@ void neuralNetwork::reluActConvLayer(layer &circuit, i64 &layer_id)
     printLayerInfo(circuit, layer_id++);
 }
 
+/**
+ * This is the ReLU layer function after fully connected layers
+ * ReLU after FC and ReLU after conv implement the ReLU operation similarly, the only difference lies in the number of ReLUs and loop logic
+ */
 void neuralNetwork::reluActFconLayer(layer &circuit, i64 &layer_id)
 {
     i64 block_len = channel_out * pic_parallel;
@@ -632,6 +650,7 @@ void neuralNetwork::reluActFconLayer(layer &circuit, i64 &layer_id)
 
 /**
  * This is the average pooling layer function
+ * check the paper for how is this layer built
  */
 void neuralNetwork::avgPoolingLayer(layer &circuit, i64 &layer_id)
 {
@@ -682,6 +701,9 @@ void neuralNetwork::avgPoolingLayer(layer &circuit, i64 &layer_id)
     printLayerInfo(circuit, layer_id++);
 }
 
+/**
+ * This is the max pooling layer function
+ */
 void neuralNetwork::maxPoolingLayer(layeredCircuit &C, i64 &layer_id, i64 first_dcmp_id, i64 first_max_id,
                                     i64 first_max_dcmp_id)
 {
@@ -848,26 +870,34 @@ void neuralNetwork::maxPoolingLayer(layeredCircuit &C, i64 &layer_id, i64 first_
 
 void neuralNetwork::fullyConnLayer(layer &circuit, i64 &layer_id, i64 first_fc_id, i64 first_bias_id)
 {
+    // size means the number of output neurons
     i64 size = channel_out * pic_parallel;
     initLayer(circuit, size, layerType::FCONN);
     circuit.need_phase2 = true;
 
+    // iterate for each output neuron
     for (i64 p = 0; p < pic_parallel; ++p)
         for (i64 co = 0; co < channel_out; ++co)
         {
+            // g is the linear index of current neuron
             i64 g = matIdx(p, co, channel_out);
+            // gate for adding the bias term
             circuit.uni_gates.emplace_back(g, first_bias_id + co, 0, 0);
             for (i64 ci = 0; ci < channel_in; ++ci)
             {
                 i64 u = matIdx(p, ci, channel_in);
                 i64 v = first_fc_id + matIdx(co, ci, channel_in);
+                // gates for matmul operations
                 circuit.bin_gates.emplace_back(g, u, v, 0, 2 * (u8)(layer_id > 1));
             }
         }
 
+    // load weights and biases
     readFconWeight(first_fc_id);
     readBias(first_bias_id);
+    // forward
     calcNormalLayer(circuit, layer_id);
+    // print layer info
     printLayerInfo(circuit, layer_id++);
 }
 
@@ -899,6 +929,9 @@ void neuralNetwork::refreshConvParam(i64 new_nx, i64 new_ny, const convKernel &c
                                                                   : NCONV_FAST_SIZE;
 }
 
+/**
+ * This function is used to refresh fully connected layer parameters
+ */
 void neuralNetwork::refreshFCParam(const fconKernel &fc)
 {
     nx_in = nx_out = m = 1;
