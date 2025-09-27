@@ -234,6 +234,7 @@ bool check(long x, long y, long nx, long ny)
 void initLayer(layer &circuit, long size, layerType ty)
 {
     circuit.size = circuit.zero_start_id = size;
+    // bit_length is the length of bit to represent size
     circuit.bit_length = ceilPow2BitLength(size);
     circuit.ty = ty;
 }

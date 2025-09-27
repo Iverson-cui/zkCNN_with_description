@@ -421,6 +421,8 @@ void neuralNetwork::naiveConvLayerMul(layer &circuit, i64 &layer_id, i64 first_c
                                     i64 v = first_conv_id + tesIdx(co, ci, tx - x, ty - y, channel_in, m, m);
                                     // creates the multiplication gates with input u and v, output g, scaling 0
                                     // last argument is layer reference
+                                    // if layer_id>1, U is from layer_id-1, V is from 0 because weights always come from layer 1
+                                    // if layer_id=1, both inputs come from layer 0 because this conv layer is layer 1
                                     circuit.bin_gates.emplace_back(g++, u, v, 0, 2 * (u8)(layer_id > 1));
                                 }
 

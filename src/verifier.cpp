@@ -147,6 +147,7 @@ bool verifier::verify()
 /**
  * this function verifies all the computational layers of the circuits
  * all layers except input layer are verified
+ * layers are verified using two phase sumcheck
  */
 bool verifier::verifyInnerLayers()
 {
@@ -154,29 +155,45 @@ bool verifier::verifyInnerLayers()
     total_slow_timer.start();
 
     F alpha = F_ONE, beta = F_ZERO, relu_rou, final_claim_u1, final_claim_v1;
+    // r_u[C.size] is for the output layer. Each r_u represents random challenges for a layer of the circuit
+    // fill it with random field elements
+    // bit_length and size of a layer is set at initLayer in utils.cpp
+    // now each position of r_u[C.size] correspons to an output value of the layer
+    // for example, if the output layer has 16 outputs, then r_u[C.size] is of size 4
     r_u[C.size].resize(C.circuit[C.size - 1].bit_length);
+    // fill these 4 positions with random field elements
     for (i8 i = 0; i < C.circuit[C.size - 1].bit_length; ++i)
         r_u[C.size][i].setByCSPRNG();
+    // r_0 is the iterator for this layer's challenges
     vector<F>::const_iterator r_0 = r_u[C.size].begin();
     vector<F>::const_iterator r_1;
 
     total_timer.stop();
     total_slow_timer.stop();
 
+    // starting point for sumcheck, evaluating the prover's claimed output at random challenges r_0
     auto previousSum = p->Vres(r_0, C.circuit[C.size - 1].size, C.circuit[C.size - 1].bit_length);
+    // store verifier random challenge into prover's local storage
     p->sumcheckInitAll(r_0);
 
+    // iterate from the last layer to the first layer
     for (u8 i = C.size - 1; i; --i)
     {
+        // cur is the circuit layer to be verified
         auto &cur = C.circuit[i];
+        // every layer initialization function
         p->sumcheckInit(alpha, beta);
         total_timer.start();
         total_slow_timer.start();
 
         // phase 1
+        // r_u[i] contains random challenges for i-th layer
+        // resize it to contain all max_bl_u variables
         r_u[i].resize(cur.max_bl_u);
+        // assign each position a random challenge
         for (int j = 0; j < cur.max_bl_u; ++j)
             r_u[i][j].setByCSPRNG();
+        // if aux inputs exist, verify them altogether
         if (cur.zero_start_id < cur.size)
             relu_rou.setByCSPRNG();
         else
@@ -307,6 +324,7 @@ bool verifier::verifyInnerLayers()
 
 /**
  * This function verifies the interface between the input layer (layer 0) and all computational layers in the neural network circuit. It ensures the inputs to all computational layers are consistent with the committed data.
+ * It makes sure that the prover's claimed input layer values are mathematically consistent with all the layer dependencies
  */
 bool verifier::verifyFirstLayer()
 {
@@ -412,6 +430,7 @@ bool verifier::verifyFirstLayer()
 
 /**
  * this function verifies that the polynomial commitment to the input data is consistent with the evaluation point determined during the circuit verification phases.
+ * this function makes sure that all the computation is done based on the input data committed to, not some other data made up during verification
  */
 bool verifier::verifyInput()
 {
