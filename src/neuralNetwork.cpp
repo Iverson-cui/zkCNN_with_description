@@ -139,7 +139,7 @@ void neuralNetwork::create(prover &pr, bool only_compute)
             default:
                 // initialize, create gates and calculate values for conv mult layer
                 naiveConvLayerMul(pr.C.circuit[layer_id], layer_id, conv.weight_start_id);
-                // layer_id is updated in the above function call
+                // layer_id is updated in the above function call, 1 bigger
                 // initialize, create gates and calculate values for conv add layer
                 naiveConvLayerAdd(pr.C.circuit[layer_id], layer_id, conv.bias_start_id);
             }
@@ -154,7 +154,7 @@ void neuralNetwork::create(prover &pr, bool only_compute)
                 reluActConvLayer(pr.C.circuit[layer_id], layer_id);
         }
 
-        // pooling is done after each stage 2 conv
+        // pooling is done after each stage-2 conv
         if (i >= pool.size())
             continue;
         // calculate pooling parameters
@@ -616,17 +616,23 @@ void neuralNetwork::reluActFconLayer(layer &circuit, i64 &layer_id)
     val[0].resize(val[0].size() + dcmp_cnt);
     total_relu_in_size += dcmp_cnt;
 
+    // ReLU operation gates loop
     for (i64 g = 0; g < block_len; ++g)
     {
+        // sign_u is the start pos of bit decomposition of element g, which is its sign bit
         i64 sign_u = first_dcmp_id + g * Q_MAX;
+        // sign_u is followed by Q value bits of element g
         for (i64 s = 1; s < Q; ++s)
         {
+            // v stands for each value bit
             i64 v = sign_u + s;
+            // for every bit of element g, we need 2 gates to do the ReLU operation, outputting 0 or x
             circuit.uni_gates.emplace_back(g, v, 0, (Q - s - 1));
             circuit.bin_gates.emplace_back(g, sign_u, v, Q - s + Q_BIT_SIZE, 0);
         }
     }
 
+    // bit decomposition correctness checking gates loop
     for (i64 u = 0; u < block_len; ++u)
     {
         i64 g = block_len + u, sign_v = first_dcmp_id + u * Q_MAX;
@@ -642,6 +648,7 @@ void neuralNetwork::reluActFconLayer(layer &circuit, i64 &layer_id)
         }
     }
 
+    // bit decomposition boolean test gate loop
     for (i64 g = block_len << 1; g < (block_len << 1) + block_len * Q_MAX; ++g)
     {
         i64 u = first_dcmp_id + g - (block_len << 1);
@@ -708,6 +715,9 @@ void neuralNetwork::avgPoolingLayer(layer &circuit, i64 &layer_id)
 
 /**
  * This is the max pooling layer function
+ * @param: C: the whole circuit from the prover
+ * @param: layer_id: the layer id of this pooling layer
+ * @param:
  */
 void neuralNetwork::maxPoolingLayer(layeredCircuit &C, i64 &layer_id, i64 first_dcmp_id, i64 first_max_id,
                                     i64 first_max_dcmp_id)
@@ -740,6 +750,13 @@ void neuralNetwork::maxPoolingLayer(layeredCircuit &C, i64 &layer_id, i64 first_
     initLayer(circuit, size_0, layerType::MAX_POOL);
     circuit.zero_start_id = tot_new_size * pool_sz_sqr;
     i64 fft_len = getFFTLen(), fft_lenh = fft_len >> 1;
+
+    /**
+     * first gate loop
+     * make sure the value provided by the prover is the biggest and it is from the input
+     * It does this by each gate outputting max-input_i
+     * the value is 0 the max, negative for others
+     */
     for (i64 p = 0; p < pic_parallel; ++p)
         for (i64 co = 0; co < channel_out; ++co)
         {
@@ -760,6 +777,12 @@ void neuralNetwork::maxPoolingLayer(layeredCircuit &C, i64 &layer_id, i64 first_
                 }
         }
 
+    /**
+     * Second gate loop
+     * this loop does max value bit decomposition
+     * all gates have inputs from input layer aux
+     * it verifies that "max value", provided by prover, is consistent with "max value bit decomposition", also provided by prover
+     */
     for (i64 i_new = 0; i_new < tot_new_size; ++i_new)
     {
         i64 g_new = circuit.zero_start_id + i_new;
@@ -846,10 +869,12 @@ void neuralNetwork::maxPoolingLayer(layeredCircuit &C, i64 &layer_id, i64 first_
             for (i64 v = 0; v < minus_cnt; ++v)
             {
                 i64 g = minus_new_cnt + v;
+                // last layer difference
                 circuit.uni_gates.emplace_back(g, v, layer_id - 1, Q_BIT_SIZE + 1);
                 for (i64 bit_j = 0; bit_j < Q_MAX - 1; ++bit_j)
                 {
                     i64 u = first_dcmp_id + matIdx(v, bit_j, Q_MAX - 1);
+                    // input layer difference bit decomposition
                     circuit.uni_gates.emplace_back(g, u, 0, Q_MAX - 2 - bit_j);
                     prepareDecmpBit(layer_id - 1, v, u, Q_MAX - 2 - bit_j);
                 }
@@ -863,6 +888,7 @@ void neuralNetwork::maxPoolingLayer(layeredCircuit &C, i64 &layer_id, i64 first_
             {
                 i64 g = before_mul + tot_new_size + j;
                 i64 u = first_dcmp_id + j;
+                // binary constraints: make sure every u is boolean
                 circuit.bin_gates.emplace_back(g, u, u, 0, 0);
                 circuit.uni_gates.emplace_back(g, u, 0, Q_BIT_SIZE + 1);
             }
