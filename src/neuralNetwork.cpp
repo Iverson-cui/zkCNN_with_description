@@ -91,7 +91,9 @@ void neuralNetwork::create(prover &pr, bool only_compute)
     // intialize input layer, create gates, calculate layer values
     // but this initialization of input layers only contain network weights and input image, no auxiliary input is considered
     // because we only know how many aux exists in the input layer after all layers are processed
+    // input layer is at the 0 layer of pr.C.circuit
     inputLayer(pr.C.circuit[layer_id++]);
+    // layer_id is now updated to 1
 
     // pic_size_x and y is the initial conv size
     new_nx_in = pic_size_x;
@@ -137,6 +139,7 @@ void neuralNetwork::create(prover &pr, bool only_compute)
             default:
                 // initialize, create gates and calculate values for conv mult layer
                 naiveConvLayerMul(pr.C.circuit[layer_id], layer_id, conv.weight_start_id);
+                // layer_id is updated in the above function call
                 // initialize, create gates and calculate values for conv add layer
                 naiveConvLayerAdd(pr.C.circuit[layer_id], layer_id, conv.bias_start_id);
             }
@@ -974,23 +977,27 @@ void neuralNetwork::initParam()
     new_nx_in = pic_size_x;
     new_ny_in = pic_size_y;
     // conv layers memory layout
+    // conv_section: vector<vector<convKernel>>
     for (i64 i = 0; i < conv_section.size(); ++i)
     {
+        // sec: vector<convKernel>
         auto &sec = conv_section[i];
         for (i64 j = 0; j < sec.size(); ++j)
         {
             refreshConvParam(new_nx_in, new_ny_in, sec[j]);
             // conv_kernel
             // everything after pos is network parameters
-            // weights
+            // weights starts from pos
             sec[j].weight_start_id = pos;
             u32 para_size = sqr(m) * channel_in * channel_out;
+            // update pos for the bias
             pos += para_size;
             total_para_size += para_size;
             fprintf(stderr, "kernel weight: %11d%11lld\n", para_size, total_para_size);
 
-            // bias
+            // bias starts from pos
             sec[j].bias_start_id = pos;
+            // update pos
             pos += channel_out;
             total_para_size += channel_out;
             fprintf(stderr, "bias   weight: %11lld%11lld\n", channel_out, total_para_size);
@@ -1027,6 +1034,7 @@ void neuralNetwork::initParam()
     }
     total_in_size = pos;
 
+    // SIZE is the object member variable, able to be accessed across all methods
     SIZE = 1 + total_conv_layer_cnt + total_pool_layer_cnt + (FC_SIZE + RELU_SIZE) * full_conn.size();
     if (!full_conn.empty())
         SIZE -= RELU_SIZE;

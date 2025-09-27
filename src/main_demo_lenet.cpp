@@ -36,6 +36,7 @@ int main(int argc, char **argv)
     // initialize the prover
     prover p;
     // network creation
+    // x:32 y:32 channel:1 parallelism:pic_cnt pool:MAX
     lenet nn(32, 32, 1, pic_cnt, MAX, i_filename, c_filename, o_filename);
     // arithmetic circuit generation and proof creation
     nn.create(p, false);

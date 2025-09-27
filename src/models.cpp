@@ -211,6 +211,9 @@ ccnn::ccnn(i64 psize_x, i64 psize_y, i64 pparallel, i64 pchannel, poolType pool_
 /**
  * Lenet class constructor, executed when initialized
  * Declaration is somewhere else(in the models.hpp file)
+ *
+ * for lenet, this specific architecture, network is like this:
+ * 1 conv + 1 pool + 1 conv + 1 pool + 3 FC
  */
 lenet::lenet(i64 psize_x, i64 psize_y, i64 pchannel, i64 pparallel, poolType pool_ty, const std::string &i_filename,
              const string &c_filename, const std::string &o_filename)
@@ -220,6 +223,7 @@ lenet::lenet(i64 psize_x, i64 psize_y, i64 pchannel, i64 pparallel, poolType poo
     conv_section.emplace_back();
 
     i64 kernel_size = 5;
+    // choose conv type based on kernel size
     convType conv_ty = kernel_size > 3 || pparallel > 1 ? FFT : NAIVE_FAST;
 
     if (psize_x == 28 && psize_y == 28)
